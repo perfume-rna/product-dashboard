@@ -1,109 +1,166 @@
-from flask import Flask, jsonify, request, render_template_string, abort
-from flask_limiter import Limiter
-from flask_cors import CORS
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+from fastapi.middleware.cors import CORSMiddleware
+from itsdangerous import URLSafeSerializer
+from secrets import token_urlsafe, token_hex
 from sqlalchemy import create_engine, text
+import bleach
+import uvicorn
 
-app = Flask(__name__)
-CORS(app)
-limiter = Limiter(app, key_func=lambda: request.remote_addr)
-engine = create_engine('sqlite:///orders.db')
-@app.route('/dashboard')
-@limiter.limit("5 per minute")
-def dashboard():
-    with engine.connect() as conn:
-        result = conn.execute(text("SELECT order_id, items, completed FROM orders"))
-        orders = [(row['order_id'], row['items'].split(','), row['completed']) for row in result]
-    return render_template_string(DASHBOARD_TEMPLATE, orders=orders)
-DASHBOARD_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Agong Perfume Dashboard</title>
-</head>
-<body>
-    <h2 style="text-align: center;">Agong Perfume Dashboard</h2>
-    <div>
-        <table>
-            <tr id="header_row">
-                <td>Number</td>
-                <td>order id</td>
-                <td>order items</td>
-                <td>completed</td>
-            </tr>
-            {% for order in orders %}
-            <tr>
-                <td>{{index(order) +1}}</td>
-                <td>{{order[0]}}</td>
-                <td>
-                    <ul>
-                        {% for item in order[1] %}
-                        <li>{{item}}</li>
-                        {% endfor %}
-                    </ul>
-                </td>
-                <td id="boolean_{{order[0]}}" class="item_boolean">
-                    <input type="checkbox" id="complete_{{order[0]}}" onchange="boolean_completed({{order[0]}})" value="{{order[2]}}"/>
-                </td>
-            </tr>
-        </table>
-    </div>
-</body>
-<script>
-    function boolean_completed(order_id) {
-        const checkbox = document.getElementById(`complete_${order_id}`);
-        const isChecked = checkbox.checked;
-        fetch("/update_order_status", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ "order_id": order_id, "completed": isChecked })
-        })
-        .then(response => response.json())
-        .then(data => {
-            console.log("Order status updated:", data);
-            document.getElementById(`complete_${order_id}`).value = data.completed;
-            if (data.completed == "true") {
-                document.getElementById(`complete_${order_id}`).checked = true;
-            } else {
-                document.getElementById(`complete_${order_id}`).checked = false;
-            }
-        })
-        .catch(error => {
-            console.error("Error updating order status:", error);
-        });
-    };
-</script>
-<style>
-    table, th, td {
-        border: 1px solid black;
-        border-collapse: collapse;
-        padding: 10px;
-    }
+productdb = create_engine("mysql+pymysql://4J4VubRMtDYVKrk.root:UtLbWgr32k7ka8sW@gateway01.ap-southeast-1.prod.aws.tidbcloud.com:4000/perfume_product_db", pool_pre_ping=True)
+connected_clients: dict[WebSocket, str] = {}
 
-    #header_row {
-        background-color: lightgrey;
-    }
-
-    table {
-        width: 100%;
-        margin: auto;
-    }
-
-    .item_boolean {
-        text-align: center;
-    }
-
-    #header_row > td {
-        font-weight: bold;
-        background: linear-gradient(to right, #2F3A73, #C48FB3);
-        padding: 12px;
-        color: white;
-    }
+def get_data():
+    with productdb.connect() as conn:
+      items = conn.execute(text("SELECT name, quantity, price, img_link, description FROM products_tbl"))
+      list_items = []
+      for x in items:
+          list_items.append([x.name, x.quantity, str(x.price), x.img_link, x.description])
+      return list_items
     
-    input[type="checkbox"] {
-    width: 20px;
-    height: 20px;
-}
-</style>
-</html>
-"""
+async def broadcast(message: dict):
+    disconnected = []
+
+    for socket in connected_clients.keys():
+        try:
+            await socket.send_json(message)
+        except:
+            disconnected.append(socket)
+
+    # Clean up dead connections
+    for socket in disconnected:
+        connected_clients.pop(socket, None)
+# ------------------------------
+# Token generation & verification
+# ------------------------------
+serializer = URLSafeSerializer(secret_key=token_hex(16))
+
+def verify_token(token: str) -> bool:
+    if not token:
+        return False
+    try:
+        serializer.loads(token, salt="websocket_token", max_age=3600)
+        return True
+    except Exception:
+        return False
+
+def generate_token() -> str:
+    return serializer.dumps(token_urlsafe(16), salt="websocket_token")
+
+# ------------------------------
+# FastAPI setup
+# ------------------------------
+app = FastAPI()
+templates = Jinja2Templates(directory="/Users/jayren/Desktop/Developer Files/perfume/Python /templates")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
+
+# ------------------------------
+# Example login endpoint to generate token
+# ------------------------------
+@app.get("/", response_class=HTMLResponse)
+async def get_dashboard(request: Request):
+    return templates.TemplateResponse("dashboard.html", {"request": request})
+
+@app.post("/login")
+async def login(request: Request):
+    form = await request.form()
+    password = form.get("password")
+    username = form.get("username")
+    if password == "admin123" and username == "admin":
+        token = generate_token()
+        return templates.TemplateResponse("dashboard.html", {"request": request, "token": token})
+    return {"error": "Invalid password"}
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    token = websocket.query_params.get("token")
+
+    if not verify_token(token):
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+
+    # Store websocket with server-side session id
+    connected_clients[websocket] = token
+
+    # Send initial data
+    await websocket.send_json({"data": get_data()})
+
+    print(f"Client connected. Total: {len(connected_clients)}")
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            print(f"Received: {data}")
+
+            await main(data)
+
+    except WebSocketDisconnect:
+        connected_clients.pop(websocket, None)
+        print(f"Client disconnected. Total: {len(connected_clients)}")
+
+async def main(data):
+    # Sanitize input
+    for key, value in data.items():
+        if isinstance(value, str):
+            data[key] = bleach.clean(value)
+
+    query = data.get("query")
+
+    with productdb.begin() as conn:
+
+        match query:
+            case "insert":
+                conn.execute(text("""
+                    INSERT INTO products_tbl (name, quantity, price, img_link, description)
+                    VALUES (:name, :qty, :price, :img, :description)
+                """), {
+                    "name": data["product_name"],
+                    "price": round(float(data["product_price"]), 2),
+                    "description": data["product_description"],
+                    "qty": int(data["product_qty"]),
+                    "img": data["img_link"]
+                })
+
+            case "update":
+                conn.execute(text("""
+                    UPDATE products_tbl
+                    SET name=:name, price=:price, 
+                        description=:description,
+                        qty=:qty, img_link=:img
+                    WHERE name=:name
+                """), {
+                    "name": data["product_name"],
+                    "price": data["product_price"],
+                    "description": data["product_description"],
+                    "qty": data["product_qty"],
+                    "img": data["img_link"]
+                })
+
+            case "delete":
+                conn.execute(text("""
+                    DELETE FROM products_tbl
+                    WHERE name=:name
+                """), {
+                    "name": data["product_name"]
+                })
+
+            case _:
+                print("Unknown query")
+
+    # Broadcast updated data to ALL clients
+    await broadcast({
+        "message": "success",
+        "data": get_data()
+    })
+
+if __name__ == "__main__":
+    uvicorn.run("product_dash:app", reload=True)
