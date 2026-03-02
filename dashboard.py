@@ -9,10 +9,13 @@ import bleach
 import uvicorn
 
 productdb = create_engine("mysql+pymysql://4J4VubRMtDYVKrk.root:UtLbWgr32k7ka8sW@gateway01.ap-southeast-1.prod.aws.tidbcloud.com:4000/perfume_product_db", pool_pre_ping=True)
+"""
 cart1_db = create_engine("mysql+pymysql://4J4VubRMtDYVKrk.root:UtLbWgr32k7ka8sW@gateway01.ap-southeast-1.prod.aws.tidbcloud.com:4000/perfume_product_db", pool_pre_ping=True)
 cart2_db = create_engine("mysql+pymysql://4J4VubRMtDYVKrk.root:UtLbWgr32k7ka8sW@gateway01.ap-southeast-1.prod.aws.tidbcloud.com:4000/perfume_product_db", pool_pre_ping=True)
+"""
 connected_clients: dict[WebSocket, str] = {}
 
+"""
 def delete_cart(cartdb, name):
     with cartdb.connect() as conn:
         cart = conn.execute(text("SELECT email, cart_json FROM cart_tbl WHERE cart_json LIKE :w"), {"w": f"%{name}%"})
@@ -44,7 +47,7 @@ def update_cart(cartdb, change, data):
                 print("Error on editing cart")
             conn.execute(text("UPDATE cart_tbl SET cart_json = :c WHERE email = :e", {"e": email, "c": json.dumps(cartdata)})
         print("success")
-        
+ """       
 
 def get_data():
     with productdb.connect() as conn:
@@ -179,9 +182,11 @@ async def main(data):
                     "qty": data["product_qty"],
                     "img": data["img_link"]
                 })
+                """
                 update_cart(cart1_db, data["change"], {"name": data["product_name"], "previous-name": data["previous_name"], "qty": data["product_qty"] })
                 update_cart(cart2_db, data["change"], {"name": data["product_name"], "previous-name": data["previous_name"], "qty": data["product_qty"] })
-
+                """
+                
             case "delete":
                 conn.execute(text("""
                     DELETE FROM products_tbl
@@ -189,8 +194,10 @@ async def main(data):
                 """), {
                     "name": data["product_name"]
                 })
+                """
                 delete_cart(cart1_db, data["product_name"])
                 delete_cart(cart2_db, data["product_name"])
+                """
 
             case _:
                 print("Unknown query")
