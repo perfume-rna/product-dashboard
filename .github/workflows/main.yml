@@ -10,4 +10,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Send GET request
-        run: curl -s https://your-app-name.onrender.com > /dev/null
+        run: curl -s https://admin-nbrh.onrender.com > /dev/null
